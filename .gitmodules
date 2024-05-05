@@ -1,0 +1,9 @@
+[submodule "sqlite"]
+	path = sqlite
+	url = https://github.com/sqlite/sqlite.git
+[submodule "soci"]
+	path = soci
+	url = https://github.com/soci/soci.git
+[submodule "rapidjson"]
+	path = rapidjson
+	url = https://github.com/Tencent/rapidjson.git
