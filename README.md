@@ -40,12 +40,12 @@ struct Data {
 
 Planned features :
 
-[DONE] Automatic database migration
-[TODO] Bulk insertions to database
-[TODO] Insert/Update/Merge styles of operations
-[TODO] Cascading Deletes
-[TODO] Cascading Loading operations
-[TODO] Automatic Primary keys and default indexes
-[TODO] Built-in json integration with metaprogrammation
-[TODO] Customizable Indexes
-[TODO] Built-in audit tables for the ORM
+* [DONE] Automatic database migration
+* [TODO] Bulk insertions to database
+* [TODO] Insert/Update/Merge styles of operations
+* [TODO] Cascading Deletes
+* [TODO] Cascading Loading operations
+* [TODO] Automatic Primary keys and default indexes
+* [TODO] Built-in json integration with metaprogrammation
+* [TODO] Customizable Indexes
+* [TODO] Built-in audit tables for the ORM
