@@ -1,16 +1,16 @@
 
 template<>
-soci_orm::utils::AuditMigrationTables soci_orm::ORM<SOCI_ORM_CLASS>::migrate(soci::session& sql)
+soci_orm::utils::AuditMigrationTables soci_orm::ORM<SOCI_ORM_CLASS>::migrate(Orm& orm)
 {
     std::string table = details::get_table();
     using namespace soci_orm::utils;
     AuditMigrationTables result;
     AuditMigrationTable& migration = result[table];
 
-    bool tableCreated = [&]()
+    bool table_created = [&]()
         {
             std::string created_table;
-            soci::statement st = (sql.prepare_table_names(), soci::into(created_table));
+            soci::statement st = (orm.session.prepare_table_names(), soci::into(created_table));
             st.execute();
             while (st.fetch()) {
                 if (created_table == table)
@@ -20,9 +20,9 @@ soci_orm::utils::AuditMigrationTables soci_orm::ORM<SOCI_ORM_CLASS>::migrate(soc
         }();
 
     // Create table with PK and FK
-    if (!tableCreated) {
+    if (!table_created) {
         {
-            auto ddl = sql.create_table(table);
+            auto ddl = orm.session.create_table(table);
             details::add_pk(ddl);
 #define SOCI_ORM_VALUE(FIELD, NAME)         \
             ddl.column(NAME, soci_orm::Affinity<decltype(SOCI_ORM_ACCESSOR::FIELD)>::db_type);
@@ -31,7 +31,7 @@ soci_orm::utils::AuditMigrationTables soci_orm::ORM<SOCI_ORM_CLASS>::migrate(soc
         }
         auto fk = details::get_fk();
         if (!fk.empty())
-            details::add_index(sql, table + "_FK_INDEX", fk);
+            details::add_index(orm, table + "_FK_INDEX", fk);
         migration.insert(AuditMigration { table, AuditMigration::Type::TABLE, AuditMigration::Action::CREATED });
     }
 
@@ -46,7 +46,7 @@ soci_orm::utils::AuditMigrationTables soci_orm::ORM<SOCI_ORM_CLASS>::migrate(soc
     // Remove columns that are already present or flag them for deletion.
     {
         soci::column_info ci;
-        soci::statement st = (sql.prepare_column_descriptions(table), soci::into(ci));
+        soci::statement st = (orm.session.prepare_column_descriptions(table), soci::into(ci));
         st.execute();
         while (st.fetch()) {
             auto inserted = migration.insert(AuditMigration { ci.name, AuditMigration::Type::COL, AuditMigration::Action::DELETED });
@@ -56,8 +56,8 @@ soci_orm::utils::AuditMigrationTables soci_orm::ORM<SOCI_ORM_CLASS>::migrate(soc
     }
 
     // Perform migration
-    details::create_columns(sql, table, migration);
-    details::remove_columns(sql, table, migration);
+    details::create_columns(orm, table, migration);
+    details::remove_columns(orm, table, migration);
 
     if (migration.empty())
         result.erase(table);
@@ -65,7 +65,7 @@ soci_orm::utils::AuditMigrationTables soci_orm::ORM<SOCI_ORM_CLASS>::migrate(soc
 #define SOCI_ORM_COLLECTION(FIELD)                                                                  \
     {                                                                                               \
         typedef std::decay_t<decltype(SOCI_ORM_ACCESSOR::FIELD)::value_type> ValueType;             \
-        auto sub = soci_orm::ORM<ValueType>::migrate(sql);                                          \
+        auto sub = soci_orm::ORM<ValueType>::migrate(orm);                                          \
         result.insert(std::make_move_iterator(sub.begin()), std::make_move_iterator(sub.end()));    \
     }
 #include "soci_xmacro.h"

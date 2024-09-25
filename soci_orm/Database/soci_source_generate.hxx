@@ -4,9 +4,9 @@
 
 #include "private/affinity.h"
 
-#include "private/generator/header.h"
 #define SOCI_ORM_ACCESSOR soci_orm::ORM<SOCI_ORM_CLASS>::accessor
 
+#include "private/generator/forward_declarations.hxx"
 #include "private/generator/accessor.hxx"
 #include "private/generator/repository.hxx"
 #include "private/generator/saver.hxx"

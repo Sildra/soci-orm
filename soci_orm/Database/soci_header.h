@@ -1,6 +1,7 @@
 #include <vector>
 #include <string>
 #include <set>
+#include <functional>
 
 #include <soci/soci.h>
 
@@ -8,7 +9,7 @@
 
 namespace soci_orm {
     struct Orm {
-        Orm(soci::session&& session) : session(session) { }
+        Orm(soci::session&& session) : session(std::move(session)) { }
         soci::session session;
     };
 
@@ -16,7 +17,7 @@ namespace soci_orm {
     /// @description Contains the information related to the state of the database for this specific T type
     /// @tparam T Specialization type of the Repository
     template<typename T>
-    class Repository final {
+    class Repository {
     public:
         struct Value;
         Repository();
@@ -29,36 +30,56 @@ namespace soci_orm {
         std::unique_ptr<Impl> pimpl;
     };
 
-    template<typename T>
-    class SaverData final {
-    public:
-        SaverData();
-        ~SaverData();
 
-        template<typename U>
-        void append(const U& value, index);
-        void exchange() const;
-    private:
-        struct Impl;
-        std::unique_ptr<Impl> pimpl;
-    };
+
 
     /// @brief P-IMPL of the ORM Saver
     /// @tparam T Specialization type of the Saver
     template<typename T>
-    class Saver final {
+    class Saver {
     public:
+        class PrimaryKey {
+        public:
+            PrimaryKey();
+
+            template<typename U>
+            void append(const U& value, int64_t index);
+            void exchange(soci::statement& stmt) const;
+        private:
+            struct Impl;
+            std::unique_ptr<Impl> pimpl;
+        };
+
+        class Data {
+        public:
+            Data();
+
+            template<typename U>
+            void append(const U& value, int64_t index);
+            void append_action(utils::Action* action);
+            void exchange(soci::statement& stmt) const;
+            void execute(soci::statement& stmt, utils::Action action) const;
+        private:
+            struct Impl;
+            std::unique_ptr<Impl> pimpl;
+        };
+
+        Saver();
+        ~Saver();
+        Saver(Saver<T>&& other);
+        Saver<T>& operator=(Saver<T>&& other);
+
         /// @brief Prepare a new value in the Saver
         /// @param value The value that will be added
         /// @param index The current index of the value if part of an inner collection
         /// @return The prepared value, where the potential foreign key can be added
-        SaverData<T>* append(Repository<T>* repository, const T* value, int64_t index)
+        Data* append(Repository<T>* repository, const T* value, int64_t index)
         { return (value ? append(repository, *value, index) : nullptr); }
         /// @brief Prepare a new value in the Saver
         /// @param value The value that will be added
         /// @param index The current index of the value if part of an inner collection
         /// @return The prepared value, where the potential foreign key can be added
-        SaverData<T>* append(Repository<T>* repository, const T& value, int64_t index) = 0;
+        Data* append(Repository<T>* repository, const T& value, int64_t index);
         /// @brief Save the prepared values in the database
         /// @param orm The database orm engine where the query will be executed
         /// @return The Audit of the loaded values segregated by tables
@@ -67,20 +88,70 @@ namespace soci_orm {
     private:
         struct Impl;
         std::unique_ptr<Impl> pimpl;
+        utils::AuditRows affected;
     };
 
     /// @brief P-IMPL of the ORM Loader
     /// @tparam T Specialization type of the Loader
     template<typename T>
-    class Loader final {
+    class Loader {
     public:
+        struct ForeignKey {
+            struct Impl;
+            ForeignKey();
+            ForeignKey(const Impl& value);
+            ~ForeignKey();
+            ForeignKey(ForeignKey&& other);
+            ForeignKey& operator=(ForeignKey&& other);
+            bool operator<(const ForeignKey& other) const;
+            
+            template<typename U>
+            void fetch(typename Loader<U>::PrimaryKey*& value) const;
+        private:
+            std::unique_ptr<Impl> pimpl;
+        };
+
+        struct PrimaryKey {
+            struct Impl;
+            PrimaryKey();
+            PrimaryKey(const T& value);
+            ~PrimaryKey();
+            PrimaryKey(PrimaryKey&& other);
+            PrimaryKey& operator=(PrimaryKey&& other);
+            bool operator<(const PrimaryKey& other) const;
+
+            void copy_from(const PrimaryKey& other);
+            void from_base(const soci::values& values, soci::indicator ind);
+            void to_base(soci::values& values, soci::indicator ind) const;
+        private:
+            std::unique_ptr<Impl> pimpl;
+        };
+        struct Mapper;
+
+        Loader(Orm& orm, const std::string& filter);
+        ~Loader();
+        Loader(Loader<T>&& other);
+        Loader<T>& operator=(Loader<T>&& other);
+
         /// @brief Fetch a single value from the Loader and advance internal iterators
         /// @return A value of type T or empty once the iterators reached the end
         std::unique_ptr<T> fetch();
 
+        /// @brief Fetch a single value from the Loader and advance internal PK iterator
+        /// @return A value of type T or empty once the PK iterator reached the end
+        std::unique_ptr<T> fetch_pk();
+
+        /// @brief Fetch the foreign key from the Loader and advance internal FK iterator
+        /// @return A pointer to the ForeignKey or nullptr if the PK iterator reached the end
+        const ForeignKey* fetch_fk();
+
+        /// @brief Peek the foreign key from the Loader
+        /// @return A pointer to the ForeignKey or nullptr if the PK iterator reached the end
+        const ForeignKey* peek_fk();
+
         /// @brief Get the TransactionResults of the loader
         /// @return A structure containing the description of the loaded values and encountered loading errors
-        const utils::AuditTransaction& get_transaction_result() const { return transaction_result; }
+        const utils::AuditTransaction& get_transaction_result() const;
 
         /// @brief Create a new loader and execute the queries against the database
         /// @param orm The database orm engine where the query will be executed
@@ -91,7 +162,6 @@ namespace soci_orm {
     private:
         struct Impl;
         std::unique_ptr<Impl> pimpl;
-        utils::AuditTransaction transaction_result;
     };
 
     template<typename T>
@@ -126,6 +196,43 @@ namespace soci_orm {
             static void add_index(Orm& orm, const std::string& name, const std::vector<std::string>& columns);
 
             static void migrate(soci::ddl_type& ddl, const std::string& original_table, std::set<std::string>& current_columns);
+
+            // Statement builders
+            static std::string build_insert_statement();
+            static std::string build_update_statement();
+            static std::string build_merge_statement_std(soci::session& sql);
+            static std::string build_merge_statement_sqlite();
+
+            static inline const std::string& insert_statement()
+            { static std::string stmt = build_insert_statement(); return stmt; }
+            static inline const std::string& update_statement()
+            { static std::string stmt = build_update_statement(); return stmt; }
+            static inline const std::string& merge_statement_std(soci::session& sql)
+            { static std::string stmt = build_merge_statement_std(sql); return stmt; }
+            static inline const std::string& merge_statement_sqlite(soci::session&)
+            { static std::string stmt = build_merge_statement_sqlite(); return stmt; }
+            static inline const std::string& merge_statement_throw(soci::session&)
+            { throw std::logic_error("Unhandled dataabase type for merge"); }
+
+            static inline const std::string& merge_statement(soci::session& sql) {
+                using merge_fct = std::function<const std::string&(soci::session&)>;
+                static std::map<std::string, merge_fct> merger = {
+                    { "sqlite3", merge_fct(merge_statement_sqlite) },
+                    { "oracle", merge_fct(merge_statement_std) },
+                };
+                auto lookup = std::make_pair(sql.get_backend_name(), merge_fct(merge_statement_throw));
+                return merger.insert(lookup).first->second(sql);
+            }
+
+
+            static inline soci::statement prepare_select(soci::session& sql, const std::string& filter)
+            { return (sql.prepare << "select * from " << get_table() << filter); }
+            static inline soci::statement prepare_insert(soci::session& sql)
+            { return (sql.prepare << insert_statement()); }
+            static inline soci::statement prepare_update(soci::session& sql)
+            { return (sql.prepare << update_statement()); }
+            static inline soci::statement prepare_merge(soci::session& sql)
+            { return (sql.prepare << merge_statement(sql)); }
         };
 
         /// @brief Migrate the schema for the current type and its children
@@ -133,14 +240,13 @@ namespace soci_orm {
         /// @return The Audit of the migration performed on the database
         static soci_orm::utils::AuditMigrationTables migrate(Orm& orm);
 
-#if 0
         /// @brief Create a loader for the type T and fetch the data from the database
         /// @param orm The database orm engine where the query will be executed
         /// @param filter A filter subquery
         /// @return A Loader containing the loaded values, ready to be fetched
-        static inline std::unique_ptr<Loader<T>> create_loader(Orm& orm, const std::string& filter)
+        static inline Loader<T> create_loader(Orm& orm, const std::string& filter)
         {
-            return soci_orm::Loader<T>::make_loader(orm, filter);
+            return soci_orm::Loader<T>(orm, filter);
         }
 
         /// @brief Fetch the data from the database and load them in the collection of type C
@@ -160,38 +266,40 @@ namespace soci_orm {
             return loader->get_transaction_result();
         }
 
-        static std::unique_ptr<Saver<T>> create_saver();
-
-        static inline std::unique_ptr<Saver<T>> create_saver(const T& value)
+        static inline Saver<T> create_saver()
         {
-            auto saver = create_saver();
-            saver->append(value, 0);
+            return Saver<T>();
+        }
+
+        static inline Saver<T> create_saver(Repository<T>* repository, const T& value)
+        {
+            Saver<T> saver;
+            saver.append(repository, value, 0);
             return saver;
         }
 
         template<typename Iter>
-        static inline std::unique_ptr<Saver<T>> create_saver(Iter it, Iter end)
+        static inline Saver<T> create_saver(Repository<T>* repository,Iter it, Iter end)
         {
-            auto saver = create_saver();
+            Saver<T> saver;
             int64_t index = -1;
             for (; it != end; ++it)
-                saver->append(*it, ++index);
+                saver.append(repository, *it, ++index);
             return saver;
         }
 
-        static utils::AuditTransaction save(Orm& orm, const T& value) {
-            return create_saver(value)->save(orm);
+        static utils::AuditTransaction save(Orm& orm, Repository<T>* repository, const T& value) {
+            return create_saver(repository, value).save(orm);
         }
 
         template<typename Iter>
-        static utils::AuditTransaction save(Orm& orm, Iter it, Iter end) {
-            return create_saver(it, end)->save(orm);
+        static utils::AuditTransaction save(Orm& orm, Repository<T>* repository, Iter it, Iter end) {
+            return create_saver(repository, it, end).save(orm);
         }
         
         template<typename Coll>
-        static utils::AuditTransaction save(Orm& orm, const Coll& end) {
-            return create_saver(it, end)->save(orm);
+        static utils::AuditTransaction save(Orm& orm, Repository<T>* repository, const Coll& coll) {
+            return create_saver(repository, coll.begin(), coll.end()).save(orm);
         }
-#endif
     };
 } /* !namespace soci_orm */
