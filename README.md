@@ -1,4 +1,4 @@
-This is an header-only library wrapper of the SOCI database library enabling the generation of tedious database code with a set of expansion-macro.
+This is an header-only library wrapper of the SOCI database library enabling the generation of tedious database code with a set of expansion macro.
 
 # Macro definition
 
@@ -58,14 +58,17 @@ struct Data {
 
 ```
 
-Planned features :
+Developed features :
 
 * [DONE] Automatic database migration
-* [TODO] Bulk insertions to database
-* [TODO] Insert/Update/Merge styles of operations
+* [DONE] Bulk insertions to database
+* [DONE] Insert/Update/Merge styles of operations
+* [DONE] Cascading Loading operations
+* [DONE] Automatic Primary keys and default indexes
+* [DONE] Built-in json integration with metaprogrammation
+
+Planned features :
+
 * [TODO] Cascading Deletes
-* [TODO] Cascading Loading operations
-* [TODO] Automatic Primary keys and default indexes
-* [TODO] Built-in json integration with metaprogrammation
 * [TODO] Customizable Indexes
 * [TODO] Built-in audit tables for the ORM

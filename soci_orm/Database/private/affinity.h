@@ -9,10 +9,11 @@ namespace soci_orm {
     struct Affinity
     {
         static_assert(std::is_same<T, void>::value, "Class has no conversion affinity");
-        using orm_type = int;
+        using orm_type = std::nullptr_t;
         static constexpr soci::db_type db_type = soci::db_type::db_string;
-        static inline void get(const soci::values& values, const std::string& name, T& field) { }
-        static inline void set(soci::values& values, const std::string& name, const T& field) { }
+        static constexpr int db_size = 0;
+
+        static inline void from_bulk(const orm_type& value, T& field) { }
         static inline orm_type to_bulk(const T& field) { return 0; }
     };
 
@@ -21,15 +22,11 @@ namespace soci_orm {
     struct Affinity<T, typename std::enable_if<meta::is_collection_v<T> && !meta::is_basic_string_v<T>>::type>
     {
         using orm_type = std::string;
-        static constexpr soci::db_type db_type = soci::db_type::db_string;
-        static inline void get(const soci::values& values, const std::string& name, T& field)
-        {
-            std::string json = values.get<orm_type>(name, "");
-            if (!json.empty())
-                field = json::deserialize<T>(json);
-        }
-        static inline void set(soci::values& values, const std::string& name, const T& field)
-        { values.set(name, json::serialize(field)); }
+        static constexpr soci::db_type type = soci::db_type::db_string;
+        static constexpr int db_size = 0;
+
+        static inline void from_bulk(const orm_type& value, T& field)
+        { if (!value.empty()) field = json::deserialize<T>(value); }
         static inline orm_type to_bulk(const T& field)
         { return field.size() == 0 ? std::string() : json::serialize(field); }
     };
@@ -40,10 +37,10 @@ namespace soci_orm {
     {
         using orm_type = std::string;
         static constexpr soci::db_type db_type = soci::db_type::db_string;
-        static inline void get(const soci::values& values, const std::string& name, T& field)
-        { field = (T)values.get<orm_type>(name); }
-        static inline void set(soci::values& values, const std::string& name, const T& field)
-        { values.set(name, field); }
+        static constexpr int db_size = 255;
+
+        static inline void from_bulk(const orm_type& value, T& field)
+        { field = value; }
         static inline orm_type to_bulk(const T& field)
         { return field; }
     };
@@ -54,10 +51,10 @@ namespace soci_orm {
     {
         using orm_type = int64_t;
         static constexpr soci::db_type db_type = soci::db_type::db_int64;
-        static inline void get(const soci::values& values, const std::string& name, T& field)
-        { field = (T)values.get<orm_type>(name); }
-        static inline void set(soci::values& values, const std::string& name, const T& field)
-        { values.set(name, (int64_t)field); }
+        static constexpr int db_size = 0;
+        
+        static inline void from_bulk(const orm_type& value, T& field)
+        { field = (T)value; }
         static inline orm_type to_bulk(const T& field)
         { return (orm_type)field; }
     };
@@ -68,10 +65,10 @@ namespace soci_orm {
     {
         using orm_type = double;
         static constexpr soci::db_type db_type = soci::db_type::db_double;
-        static inline void get(const soci::values& values, const std::string& name, T& field)
-        { field = (T)values.get<orm_type>(name); }
-        static inline void set(soci::values& values, const std::string& name, const T& field)
-        { values.set(name, (double)field); }
+        static constexpr int db_size = 0;
+
+        static inline void from_bulk(const orm_type& value, T& field)
+        { field = (T)value; }
         static inline orm_type to_bulk(const T& field)
         { return (orm_type)field; }
     };

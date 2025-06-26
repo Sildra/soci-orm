@@ -18,6 +18,7 @@ struct AuditRows
     int merged {};
     int ignored {};
     int loaded {};
+    int elapsed_ms {};
 
     std::set<std::string> audit {};
 
@@ -27,33 +28,56 @@ struct AuditRows
         merged += other.merged;
         ignored += other.ignored;
         loaded += other.loaded;
+        elapsed_ms += other.elapsed_ms;
+        audit.insert(other.audit.begin(), other.audit.end());
         return *this;
     }
 };
 typedef std::map<std::string, AuditRows> AuditTransaction;
 
-struct AuditMigration
+struct ColumnDefinition
 {
-    enum class Action { CREATED, DELETED, CREATION_NOT_SUPPORTED };
-    enum class Type { PK, FK, COL, TABLE };
+    enum class Type { FK, PK, AUTOINDEX, COL };
 
     std::string name;
     Type type { Type::COL };
-    Action action { Action::CREATED };
-
-    friend bool operator<(const AuditMigration& l, const AuditMigration& r)
-    {
-        return l.name < r.name;
-    }
+    soci::db_type db_type;
+    size_t db_size { };
 };
-typedef std::set<AuditMigration> AuditMigrationTable;
-typedef std::map<std::string, AuditMigrationTable> AuditMigrationTables;
+typedef std::vector<ColumnDefinition> ColumnsDefinition;
+typedef std::map<std::string, ColumnsDefinition> TablesDefinition;
+struct ColumnMigration {
+    enum class Action { CREATED, DELETED, ALTERED, NO_ACTION };
+    ColumnDefinition definition;
+    Action action { Action::NO_ACTION };
+
+    friend bool operator<(const ColumnMigration& l, const ColumnMigration& r)
+    {
+        return l.definition.name < r.definition.name;
+    }
+
+};
+typedef std::set<ColumnMigration> ColumnsMigration;
+typedef std::map<std::string, ColumnsMigration> TablesMigration;
 
 std::string merge_string(const std::string& separator, const std::vector<std::string>& values)
 {
     std::string result;
     for (const auto& value : values)
         result.append(value).append(separator);
+    result.resize(std::max(0, ((int)result.size()) - ((int)separator.size())));
+    return result;
+}
+
+template<typename T, typename U>
+std::string merge_string(const std::string& separator, const T& values, const U& convertor)
+{
+    std::string result;
+    for (const auto& value : values) {
+        auto converted = convertor(value);
+        if (!converted.empty())
+            result.append(std::move(converted)).append(separator);
+    }
     result.resize(std::max(0, ((int)result.size()) - ((int)separator.size())));
     return result;
 }
@@ -73,15 +97,39 @@ struct smart_inserter<T, typename std::enable_if<std::is_pointer<typename T::con
     smart_inserter() = delete;
     template<typename U>
     static inline void insert(T& inserter, std::unique_ptr<U>& value) { inserter = value.release(); }
+    template<typename U>
+    static inline void insert(T& inserter, std::unique_ptr<U>&& value) { inserter = value.release(); }
 };
 
 template<typename T>
-struct smart_inserter<T, typename std::enable_if<!std::is_pointer<typename T::container_type::value_type>::value>::type>
+struct smart_inserter<T, typename std::enable_if<meta::is_smartpointer_v<typename T::container_type::value_type>>::type>
+{
+    smart_inserter() = delete;
+    template<typename U>
+    static inline void insert(T& inserter, std::unique_ptr<U>& value) { inserter = std::move(value); }
+    template<typename U>
+    static inline void insert(T& inserter, std::unique_ptr<U>&& value) { inserter = std::move(value); }
+};
+
+template<typename T>
+struct smart_inserter<T, typename std::enable_if<!std::is_pointer<typename T::container_type::value_type>::value && !meta::is_smartpointer_v<typename T::container_type::value_type>>::type>
 {
     smart_inserter() = delete;
     template<typename U>
     static inline void insert(T& inserter, std::unique_ptr<U>& value) { inserter = std::move(*value); }
+    template<typename U>
+    static inline void insert(T& inserter, std::unique_ptr<U>&& value) { inserter = std::move(*value); }
 };
+
+template<typename T>
+inline int compare(const T& a, const T& b) {
+    static_assert(std::is_integral<T>::value, "Default compare requires integral values");
+    return (int)a - b;
+}
+template<>
+inline int compare(const std::string& a, const std::string& b) {
+    return a.compare(b);
+}
 
 } /* !namespace utils */
 
@@ -95,8 +143,9 @@ struct json::cx<utils::AuditRows>
         json::deserialize_field("INSERTED", v, result.inserted);
         json::deserialize_field("UPDATED", v, result.updated);
         json::deserialize_field("MERGED", v, result.merged);
-        json::deserialize_field("IGNORED", v, result.ignored);
         json::deserialize_field("LOADED", v, result.loaded);
+        json::deserialize_field("IGNORED", v, result.ignored);
+        json::deserialize_field("ELAPSED_MS", v, result.elapsed_ms);
         json::deserialize_field("AUDIT", v, result.audit);
         return result;
     }
@@ -106,16 +155,17 @@ struct json::cx<utils::AuditRows>
         if (f.inserted > 0)     json::serialize_field("INSERTED", f.inserted, d, a);
         if (f.updated > 0)      json::serialize_field("UPDATED", f.updated, d, a);
         if (f.merged > 0)       json::serialize_field("MERGED", f.merged, d, a);
-        if (f.ignored > 0)      json::serialize_field("IGNORED", f.ignored, d, a);
         if (f.loaded > 0)       json::serialize_field("LOADED", f.loaded, d, a);
+        if (f.ignored > 0)      json::serialize_field("IGNORED", f.ignored, d, a);
+        if (f.elapsed_ms > 0)   json::serialize_field("IGNORED", f.elapsed_ms, d, a);
         if (f.audit.size() > 0) json::serialize_field("AUDIT", f.audit, d, a);
     }
 };
 
 template<>
-struct json::cx<utils::AuditMigration>
+struct json::cx<utils::ColumnMigration>
 {
-    typedef utils::AuditMigration T;
+    typedef utils::ColumnMigration T;
     static inline T deserialize(const rapidjson::Value& v)
     {
         return T {}; // Not used
@@ -124,22 +174,21 @@ struct json::cx<utils::AuditMigration>
     {
         d.SetObject();
         std::string description;
-        switch (f.type)
+        switch (f.definition.type)
         {
-            case T::Type::PK: description = "PK "; break;
-            case T::Type::FK: description = "FK "; break;
-            case T::Type::TABLE: description = "TABLE "; break;
-            case T::Type::COL: description = "COLUMN "; break;
+            case utils::ColumnDefinition::Type::PK: description = "PK "; break;
+            case utils::ColumnDefinition::Type::FK: description = "FK "; break;
+            case utils::ColumnDefinition::Type::COL: description = "COLUMN "; break;
             default: break;
         }
         switch (f.action)
         {
             case T::Action::CREATED: description += "CREATED"; break;
             case T::Action::DELETED: description += "DELETED"; break;
-            case T::Action::CREATION_NOT_SUPPORTED: description += "CREATION NOT SUPPORTED"; break;
+            case T::Action::ALTERED: description += "ALTERED"; break;
             default: break;
         }
-        d.AddMember(rapidjson::StringRef(f.name), rapidjson::Value(description, a), a);
+        d.AddMember(rapidjson::StringRef(f.definition.name), rapidjson::Value(description, a), a);
     }
 };
 

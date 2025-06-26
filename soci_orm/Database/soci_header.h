@@ -1,7 +1,10 @@
+#pragma once
+
 #include <vector>
 #include <string>
 #include <set>
 #include <functional>
+#include <chrono>
 
 #include <soci/soci.h>
 
@@ -9,8 +12,10 @@
 
 namespace soci_orm {
     struct Orm {
+        using chrono = std::chrono::high_resolution_clock;
         Orm(soci::session&& session) : session(std::move(session)) { }
         soci::session session;
+        size_t fetch_size { 1000 };
     };
 
     /// @brief P-IMPL of the Repository
@@ -30,40 +35,97 @@ namespace soci_orm {
         std::unique_ptr<Impl> pimpl;
     };
 
+    template<typename T> class Bulk;
+    template<typename T>
+    class Single {
+        friend class Bulk<T>;
+    public:
+        Single();
+        ~Single();
+        Single(Single<T>&&) noexcept;
 
+        template<typename U>
+        const Single<U>& get() const;
 
+        int compare(const Single<T>& other) const;
+        bool operator<(const Single<T>& other) const { return compare(other) < 0; }
+
+    private:
+        struct Impl;
+        std::unique_ptr<Impl> pimpl;
+    };
+
+    /// @brief A Bulk object represented as a vectorized version of a class, suitable for bulk insertions in databases
+    /// @tparam T The class that will serve as the layout of the data
+    template<typename T>
+    class Bulk {
+    public:
+        /// @brief The PrimaryKey part of a Bulk object
+        class PrimaryKey {
+            friend class Bulk<T>;
+        public:
+            /// @brief Constructor
+            PrimaryKey();
+            ~PrimaryKey();
+
+            void resize(size_t size);
+
+            template<typename U>
+            void append(const U& value, int64_t index);
+            void get(T& value, size_t index);
+            void get(Single<T>& value, size_t index);
+            void into(soci::statement& stmt, std::vector<soci::indicator>& indicators);
+            void use(soci::statement& stmt) const;
+        private:
+            struct Impl;
+            std::unique_ptr<Impl> pimpl;
+        };
+        /// @brief Constructor
+        Bulk();
+        ~Bulk();
+
+        /// @brief Resize the Bulk buffers
+        /// @param size The size of the buffers
+        void resize(size_t size);
+
+        /// @brief Append a class to the Bulk object
+        /// @tparam U The class to append
+        /// @param value The value to append
+        /// @param index The current autoindex value
+        template<typename U>
+        void append(const U& value, int64_t index);
+
+        /// @brief Append a reference of the repository action to the Bulk object
+        /// @param action The potentially null reference to the action that will be set
+        void append_action(utils::Action* action);
+
+        void get(T& value, size_t index);
+        void get(Single<T>& value, size_t index);
+
+        /// @brief Associate into buffers for database load
+        /// @param stmt The statement where the perparation occurs
+        /// @param indicators The potentially null indicators
+        void into(soci::statement& stmt, std::vector<soci::indicator>& indicators);
+
+        /// @brief Associate use buffers for database save
+        /// @param stmt The statement where the perparation occurs
+        void use(soci::statement& stmt) const;
+
+        /// @brief Save the bulk request that has been previously constructed
+        /// @param stmt The statement to execute
+        /// @param action The action to set in the repository once executed
+        void save(soci::statement& stmt, utils::Action action) const;
+
+    private:
+        struct Impl;
+        std::unique_ptr<Impl> pimpl;
+    };
 
     /// @brief P-IMPL of the ORM Saver
     /// @tparam T Specialization type of the Saver
     template<typename T>
     class Saver {
     public:
-        class PrimaryKey {
-        public:
-            PrimaryKey();
-
-            template<typename U>
-            void append(const U& value, int64_t index);
-            void exchange(soci::statement& stmt) const;
-        private:
-            struct Impl;
-            std::unique_ptr<Impl> pimpl;
-        };
-
-        class Data {
-        public:
-            Data();
-
-            template<typename U>
-            void append(const U& value, int64_t index);
-            void append_action(utils::Action* action);
-            void exchange(soci::statement& stmt) const;
-            void execute(soci::statement& stmt, utils::Action action) const;
-        private:
-            struct Impl;
-            std::unique_ptr<Impl> pimpl;
-        };
-
         Saver();
         ~Saver();
         Saver(Saver<T>&& other);
@@ -73,13 +135,13 @@ namespace soci_orm {
         /// @param value The value that will be added
         /// @param index The current index of the value if part of an inner collection
         /// @return The prepared value, where the potential foreign key can be added
-        Data* append(Repository<T>* repository, const T* value, int64_t index)
+        Bulk<T>* append(Repository<T>* repository, const T* value, int64_t index)
         { return (value ? append(repository, *value, index) : nullptr); }
         /// @brief Prepare a new value in the Saver
         /// @param value The value that will be added
         /// @param index The current index of the value if part of an inner collection
         /// @return The prepared value, where the potential foreign key can be added
-        Data* append(Repository<T>* repository, const T& value, int64_t index);
+        Bulk<T>* append(Repository<T>* repository, const T& value, int64_t index);
         /// @brief Save the prepared values in the database
         /// @param orm The database orm engine where the query will be executed
         /// @return The Audit of the loaded values segregated by tables
@@ -96,68 +158,30 @@ namespace soci_orm {
     template<typename T>
     class Loader {
     public:
-        struct ForeignKey {
-            struct Impl;
-            ForeignKey();
-            ForeignKey(const Impl& value);
-            ~ForeignKey();
-            ForeignKey(ForeignKey&& other);
-            ForeignKey& operator=(ForeignKey&& other);
-            bool operator<(const ForeignKey& other) const;
-            
-            template<typename U>
-            void fetch(typename Loader<U>::PrimaryKey*& value) const;
-        private:
-            std::unique_ptr<Impl> pimpl;
-        };
-
-        struct PrimaryKey {
-            struct Impl;
-            PrimaryKey();
-            PrimaryKey(const T& value);
-            ~PrimaryKey();
-            PrimaryKey(PrimaryKey&& other);
-            PrimaryKey& operator=(PrimaryKey&& other);
-            bool operator<(const PrimaryKey& other) const;
-
-            void copy_from(const PrimaryKey& other);
-            void from_base(const soci::values& values, soci::indicator ind);
-            void to_base(soci::values& values, soci::indicator ind) const;
-        private:
-            std::unique_ptr<Impl> pimpl;
-        };
-        struct Mapper;
-
         Loader(Orm& orm, const std::string& filter);
         ~Loader();
         Loader(Loader<T>&& other);
         Loader<T>& operator=(Loader<T>&& other);
-
-        /// @brief Fetch a single value from the Loader and advance internal iterators
-        /// @return A value of type T or empty once the iterators reached the end
+        
+        /// @brief Fetch the next value contained in the Loader
+        /// @return A pointer containing the next value or null if the Loader reached the end
         std::unique_ptr<T> fetch();
 
-        /// @brief Fetch a single value from the Loader and advance internal PK iterator
-        /// @return A value of type T or empty once the PK iterator reached the end
-        std::unique_ptr<T> fetch_pk();
+        /// @brief Peek the next PrimaryKey of the Loader
+        /// @return 
+        const Single<T>& peek_pk() const;
 
-        /// @brief Fetch the foreign key from the Loader and advance internal FK iterator
-        /// @return A pointer to the ForeignKey or nullptr if the PK iterator reached the end
-        const ForeignKey* fetch_fk();
+        /// @brief Check if there is still data in the Loader
+        bool end() const;
 
-        /// @brief Peek the foreign key from the Loader
-        /// @return A pointer to the ForeignKey or nullptr if the PK iterator reached the end
-        const ForeignKey* peek_fk();
+        /// @brief Inrcements the Loader
+        /// @warning Does not check for out-of-bound access
+        void next();
+
 
         /// @brief Get the TransactionResults of the loader
         /// @return A structure containing the description of the loaded values and encountered loading errors
         const utils::AuditTransaction& get_transaction_result() const;
-
-        /// @brief Create a new loader and execute the queries against the database
-        /// @param orm The database orm engine where the query will be executed
-        /// @param filter A filter subquery
-        /// @return A Loader containing the loaded values, ready to be fetched
-        static std::unique_ptr<Loader<T>> make_loader(Orm& orm, const std::string& filter);
 
     private:
         struct Impl;
@@ -174,28 +198,12 @@ namespace soci_orm {
             /// @brief Returns the table name associated to the current ORM
             /// @return A string containing the table name
             static const std::string& get_table();
-            static void fetch_pk(std::vector<std::string>& pks);
-            static void fetch_fields(std::vector<std::string>& fields);
-            static void fetch_fk(std::vector<std::string>& fks);
-
-            static inline std::vector<std::string> get_pk()
-            { std::vector<std::string> v; fetch_pk(v); return v; }
-            static inline std::vector<std::string> get_fk()
-            { std::vector<std::string> v; fetch_fk(v); return v; }
-            static inline std::vector<std::string> get_fields()
-            { std::vector<std::string> v; fetch_fields(v); return v; }
+            /// @brief Get the computed column definition associated to the current ORM
+            /// @return A vector containing the columns definition ordered by the following types { FK, PK, AUTOINDEX, COL }, names order is preserved
+            static const utils::ColumnsDefinition& get_columns_definition();
 
             // Migration utilities
-            static void create_columns(Orm& orm, const std::string& original_table,
-                utils::AuditMigrationTable& audit);
-            static void remove_columns(Orm& orm, const std::string& original_table,
-                utils::AuditMigrationTable& audit);
-            static void add_pk(soci::ddl_type& ddl);
-            static void add_pk_constraints(soci::ddl_type& ddl);
-            static void add_fk_constraints(soci::ddl_type& ddl);
             static void add_index(Orm& orm, const std::string& name, const std::vector<std::string>& columns);
-
-            static void migrate(soci::ddl_type& ddl, const std::string& original_table, std::set<std::string>& current_columns);
 
             // Statement builders
             static std::string build_insert_statement();
@@ -212,7 +220,7 @@ namespace soci_orm {
             static inline const std::string& merge_statement_sqlite(soci::session&)
             { static std::string stmt = build_merge_statement_sqlite(); return stmt; }
             static inline const std::string& merge_statement_throw(soci::session&)
-            { throw std::logic_error("Unhandled dataabase type for merge"); }
+            { throw std::logic_error("Unhandled database type for merge"); }
 
             static inline const std::string& merge_statement(soci::session& sql) {
                 using merge_fct = std::function<const std::string&(soci::session&)>;
@@ -238,7 +246,7 @@ namespace soci_orm {
         /// @brief Migrate the schema for the current type and its children
         /// @param orm The database orm engine where the query will be executed
         /// @return The Audit of the migration performed on the database
-        static soci_orm::utils::AuditMigrationTables migrate(Orm& orm);
+        static soci_orm::utils::TablesMigration migrate(Orm& orm);
 
         /// @brief Create a loader for the type T and fetch the data from the database
         /// @param orm The database orm engine where the query will be executed
@@ -260,10 +268,10 @@ namespace soci_orm {
         {
             auto loader = create_loader(orm, filter);
             auto inserter = std::inserter(collection, collection.end());
-            while (auto data = loader->fetch()) {
+            while (auto data = loader.fetch()) {
                 utils::smart_inserter<decltype(inserter)>::insert(inserter, data);
             }
-            return loader->get_transaction_result();
+            return loader.get_transaction_result();
         }
 
         static inline Saver<T> create_saver()
@@ -279,7 +287,7 @@ namespace soci_orm {
         }
 
         template<typename Iter>
-        static inline Saver<T> create_saver(Repository<T>* repository,Iter it, Iter end)
+        static inline Saver<T> create_saver(Repository<T>* repository, Iter it, Iter end)
         {
             Saver<T> saver;
             int64_t index = -1;

@@ -44,5 +44,18 @@ struct is_pair {
 };
 template<typename T>
 static constexpr bool is_pair_v = is_pair<T>::value;
+
+template<typename T>
+struct is_smartpointer {
+    template<typename A>
+    static constexpr bool test(A* pt, typename A::first_type* = nullptr) {
+        return true;
+    }
+    template<typename A>
+    static constexpr bool test(...) { return false; }
+    static constexpr bool value = test<typename std::decay<T>::type>(nullptr);
+};
+template<typename T>
+static constexpr bool is_smartpointer_v = is_smartpointer<T>::value;
 } /* !namespace meta */
 } /* !namespace soci_orm */

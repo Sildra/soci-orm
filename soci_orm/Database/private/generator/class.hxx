@@ -1,11 +1,10 @@
-
 template<>
-soci_orm::utils::AuditMigrationTables soci_orm::ORM<SOCI_ORM_CLASS>::migrate(Orm& orm)
+soci_orm::utils::TablesMigration SOCI_ORM_MAIN::migrate(Orm& orm)
 {
     std::string table = details::get_table();
     using namespace soci_orm::utils;
-    AuditMigrationTables result;
-    AuditMigrationTable& migration = result[table];
+    TablesMigration result;
+    auto& migration = result[table];
 
     bool table_created = [&]()
         {
@@ -21,50 +20,66 @@ soci_orm::utils::AuditMigrationTables soci_orm::ORM<SOCI_ORM_CLASS>::migrate(Orm
 
     // Create table with PK and FK
     if (!table_created) {
-        {
-            auto ddl = orm.session.create_table(table);
-            details::add_pk(ddl);
-#define SOCI_ORM_VALUE(FIELD, NAME)         \
-            ddl.column(NAME, soci_orm::Affinity<decltype(SOCI_ORM_ACCESSOR::FIELD)>::db_type);
-#include "soci_xmacro.h"
-            details::add_pk_constraints(ddl);
+        auto ddl = orm.session.create_table(table);
+        std::string pk_constraint;
+        std::string fk_constraint;
+        for (const auto& column : details::get_columns_definition()) {
+            if (column.type != ColumnDefinition::Type::COL)
+                pk_constraint += column.name + ",";
+            if (column.type == ColumnDefinition::Type::FK)
+                fk_constraint += column.name + ",";
+            ddl.column(column.name, column.db_type, column.db_size);
         }
-        auto fk = details::get_fk();
-        if (!fk.empty())
-            details::add_index(orm, table + "_FK_INDEX", fk);
-        migration.insert(AuditMigration { table, AuditMigration::Type::TABLE, AuditMigration::Action::CREATED });
+        if (!pk_constraint.empty()) {
+            pk_constraint.pop_back();
+            ddl.primary_key(table + "_PK", pk_constraint);
+        }
+        if (!fk_constraint.empty()) {
+            fk_constraint.pop_back();
+#define SOCI_ORM_FK(CLASS)    \
+            ddl.foreign_key(table + "_FK", fk_constraint, ORM<CLASS>::details::get_table(), fk_constraint);
+#include "soci_xmacro.h"
+        }
     }
 
-    // List all columns that needs to be present post-migration. PK and FK cannot be changed that way.
-    for (const auto& pk : details::get_pk())
-        migration.insert(AuditMigration { pk, AuditMigration::Type::PK, AuditMigration::Action::CREATION_NOT_SUPPORTED });
-    for (const auto& fk : details::get_fk())
-        migration.insert(AuditMigration { fk, AuditMigration::Type::FK, AuditMigration::Action::CREATION_NOT_SUPPORTED });
-    for (const auto& field : details::get_fields())
-        migration.insert(AuditMigration { field, AuditMigration::Type::COL, AuditMigration::Action::CREATED });
-
     // Remove columns that are already present or flag them for deletion.
+
+    for (const auto& column : details::get_columns_definition()) {
+        auto target_action = (column.type == ColumnDefinition::Type::COL ? ColumnMigration::Action::CREATED : ColumnMigration::Action::NO_ACTION);
+        migration.insert( ColumnMigration { column, target_action });
+    }
     {
         soci::column_info ci;
         soci::statement st = (orm.session.prepare_column_descriptions(table), soci::into(ci));
         st.execute();
         while (st.fetch()) {
-            auto inserted = migration.insert(AuditMigration { ci.name, AuditMigration::Type::COL, AuditMigration::Action::DELETED });
-            if (!inserted.second)
-                migration.erase(inserted.first);
+            auto inserted = migration.insert(ColumnMigration { ColumnDefinition { ci.name, ColumnDefinition::Type::COL, ci.dataType, ci.length }, ColumnMigration::Action::DELETED });
+            if (!inserted.second) {
+                if (inserted.first->definition.db_size != ci.length && orm.session.get_backend_name() != "sqlite3")
+                    const_cast<ColumnMigration::Action&>(inserted.first->action) = ColumnMigration::Action::ALTERED;
+                else
+                    migration.erase(inserted.first);
+            }
         }
     }
 
     // Perform migration
-    details::create_columns(orm, table, migration);
-    details::remove_columns(orm, table, migration);
+    for (auto& migration_info : migration) {
+        auto& def = migration_info.definition;
+        switch (migration_info.action) {
+            case ColumnMigration::Action::CREATED: orm.session.add_column(table, def.name, def.db_type, def.db_size); break;
+            case ColumnMigration::Action::DELETED: orm.session.drop_column(table, def.name); break;
+            case ColumnMigration::Action::ALTERED: orm.session.alter_column(table, def.name, def.db_type, def.db_size); break;
+            default: break;
+        }
+    }
 
     if (migration.empty())
         result.erase(table);
 
 #define SOCI_ORM_COLLECTION(FIELD)                                                                  \
     {                                                                                               \
-        typedef std::decay_t<decltype(SOCI_ORM_ACCESSOR::FIELD)::value_type> ValueType;             \
+        typedef std::decay_t<SOCI_ORM_ACCESSOR::FIELD::value_type> ValueType;                       \
         auto sub = soci_orm::ORM<ValueType>::migrate(orm);                                          \
         result.insert(std::make_move_iterator(sub.begin()), std::make_move_iterator(sub.end()));    \
     }

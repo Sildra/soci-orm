@@ -1,27 +1,14 @@
-namespace soci_orm {
-#define SOCI_ORM_FK(CLASS)                                                                              \
-template<> void ORM<CLASS>::details::add_fk_constraints(soci::ddl_type& ddl);                           \
-template<> void ORM<CLASS>::details::add_pk(soci::ddl_type& ddl);                                       \
-template<> void ORM<CLASS>::details::fetch_pk(std::vector<std::string>& pks);                           \
-template<> template<> void Saver<CLASS>::Data::append(const CLASS& value, int64_t index);               \
-template<> void Saver<CLASS>::Data::exchange(soci::statement& stmt) const;                              \
-template<> Loader<CLASS>::PrimaryKey::PrimaryKey();                                                     \
-template<> Loader<CLASS>::PrimaryKey::~PrimaryKey();                                                    \
-template<> void Loader<CLASS>::PrimaryKey::to_base(soci::values& values, soci::indicator ind) const;    \
-template<> void Loader<CLASS>::PrimaryKey::copy_from(const PrimaryKey& other);                          \
-template<> bool Loader<CLASS>::PrimaryKey::operator<(const PrimaryKey& other) const;                    \
-template<> void Loader<CLASS>::PrimaryKey::from_base(const soci::values& values, soci::indicator ind); \
+#define SOCI_ORM_FK(CLASS)                                                                                                  \
+template<> const std::string& soci_orm::ORM<CLASS>::details ::get_table();                                                  \
+template<> const soci_orm::utils::ColumnsDefinition& soci_orm::ORM<CLASS>::details::get_columns_definition();               \
+template<> int soci_orm::Single<CLASS>::compare(const soci_orm::Single<CLASS>& other) const;                                \
+template<> void soci_orm::Bulk<CLASS>::PrimaryKey::resize(size_t size);                                                     \
+template<> template<> void soci_orm::Bulk<CLASS>::PrimaryKey::append<CLASS>(const CLASS& value, int64_t index);             \
+template<> void soci_orm::Bulk<CLASS>::PrimaryKey::get(soci_orm::Single<CLASS>& value, size_t index);                       \
+template<> void soci_orm::Bulk<CLASS>::PrimaryKey::into(soci::statement& stmt, std::vector<soci::indicator>& indicators);   \
+template<> void soci_orm::Bulk<CLASS>::PrimaryKey::use(soci::statement& stmt) const;                                        \
 
 #include "soci_xmacro.h"
 
-template<> const std::string& ORM<SOCI_ORM_CLASS>::details::get_table();
-template<> Loader<SOCI_ORM_CLASS>::ForeignKey::ForeignKey();
-template<> Loader<SOCI_ORM_CLASS>::ForeignKey::ForeignKey(const Impl& value);
-template<> Loader<SOCI_ORM_CLASS>::ForeignKey::~ForeignKey();
-template<> Loader<SOCI_ORM_CLASS>::PrimaryKey::PrimaryKey();
-template<> Loader<SOCI_ORM_CLASS>::PrimaryKey::PrimaryKey(const SOCI_ORM_CLASS& value);
-template<> Loader<SOCI_ORM_CLASS>::PrimaryKey::~PrimaryKey();
-template<> bool Loader<SOCI_ORM_CLASS>::PrimaryKey::operator<(const PrimaryKey& other) const;
-
-
-} /* !namespace soci_orm */
+template<> const std::string& SOCI_ORM_DETAILS::get_table();
+template<> const soci_orm::utils::ColumnsDefinition& SOCI_ORM_DETAILS::get_columns_definition();
